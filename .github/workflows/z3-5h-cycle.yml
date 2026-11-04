@@ -5,7 +5,7 @@ on:
     inputs:
       cycle:
         description: "cycle counter"
-        default: "0"
+        default: ""
   schedule:
     - cron: "0 */6 * * *"
 
@@ -18,19 +18,19 @@ permissions:
   actions: write
 
 jobs:
-  cycle:
-    runs-on: self-hosted
+  worker:
+    runs-on: ubuntu-latest
     timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Restore state from git
+      - name: Restore state
         run: |
-          git config user.email "z3-bot@search.local"
-          git config user.name  "z3-bot"
           git fetch origin state 2>/dev/null || true
           if git rev-parse --verify origin/state >/dev/null 2>&1; then
             git checkout origin/state -- state/ 2>/dev/null || mkdir -p state
@@ -38,34 +38,100 @@ jobs:
             mkdir -p state
           fi
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - name: Determine cycle
+        id: det
+        run: |
+          if [ -n "${{ github.event.inputs.cycle }}" ]; then
+            C=${{ github.event.inputs.cycle }}
+          elif [ -f state/coordinator.json ]; then
+            PREV=$(jq -r '.cycle // -1' state/coordinator.json)
+            C=$((PREV + 1))
+          else
+            C=0
+          fi
+          echo "value=$C" >> $GITHUB_OUTPUT
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
-        run: |
-          python3 -m pip install --quiet "z3-solver>=4.15.4.0"
+      - run: python3 -m pip install --quiet "z3-solver>=4.13.0"
 
-      - name: Run Z3 worker
-        timeout-minutes: 292
-        env:
-          CYCLE:        ${{ github.event.inputs.cycle || 0 }}
-          STATE_DIR:    "state"
-          TIME_BUDGET:  "17400"
-          CHECKPOINT:   "1080"
-          REPO:         ${{ github.repository }}
-          GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+      - name: Run worker
         run: |
-          python3 .github/scripts/z3_worker.py
+          python3 .github/scripts/z3_worker.py \
+            --shard ${{ matrix.shard }} \
+            --total-shards 20 \
+            --cycle ${{ steps.det.outputs.value }} \
+            --state-dir state \
+            --time-budget 17400
 
-      - name: Aggregate & update leaderboard
+      - name: Upload shard artifact
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: state/shard-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  finalize:
+    needs: worker
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore state
         run: |
-          python3 .github/scripts/aggregate.py --state-dir state
-          git add state/best.json state/LEADERBOARD.md state/history/ state/worker.json 2>/dev/null || true
+          git config user.email "z3-bot@search.local"
+          git config user.name "z3-bot"
+          git fetch origin state 2>/dev/null || true
+          if git rev-parse --verify origin/state >/dev/null 2>&1; then
+            git checkout origin/state -- state/ 2>/dev/null || mkdir -p state
+          else
+            mkdir -p state
+          fi
+
+      - name: Determine cycle
+        id: det
+        run: |
+          if [ -n "${{ github.event.inputs.cycle }}" ]; then
+            C=${{ github.event.inputs.cycle }}
+          elif [ -f state/coordinator.json ]; then
+            PREV=$(jq -r '.cycle // -1' state/coordinator.json)
+            C=$((PREV + 1))
+          else
+            C=0
+          fi
+          echo "value=$C" >> $GITHUB_OUTPUT
+
+      - name: Download shard artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: state/
+          pattern: shard-*
+          merge-multiple: true
+
+      - name: Aggregate
+        run: |
+          python3 .github/scripts/aggregate.py \
+            --state-dir state \
+            --cycle ${{ steps.det.outputs.value }}
+
+      - name: Update coordinator
+        run: |
+          echo "{\"cycle\": ${{ steps.det.outputs.value }}, \"updated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > state/coordinator.json
+
+      - name: Commit and push
+        run: |
+          git add state/
           if ! git diff --cached --quiet; then
-            git commit -m "cycle ${{ github.event.inputs.cycle || 0 }}: leaderboard update [skip ci]"
+            git commit -m "cycle ${{ steps.det.outputs.value }}: complete [skip ci]"
             for i in 1 2 3 4 5; do
               git push origin HEAD:state && break
               git fetch origin state && git rebase origin/state
@@ -73,30 +139,13 @@ jobs:
             done
           fi
 
-      - name: Final save & chain next cycle
-        if: always()
+      - name: Chain next cycle
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO:     ${{ github.repository }}
-          CYCLE:    ${{ github.event.inputs.cycle || 0 }}
-          COOLDOWN: "0"
+          REPO: ${{ github.repository }}
         run: |
-          set -e
-          cd "$GITHUB_WORKSPACE"
-          git add state/ 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "cycle $CYCLE: final checkpoint [skip ci]" || true
-            git push origin HEAD:state 2>/dev/null || {
-              git fetch origin state
-              git rebase origin/state || true
-              git push origin HEAD:state
-            }
-          fi
-          if [ "$COOLDOWN" -gt 0 ]; then
-            sleep "$COOLDOWN"
-          fi
-          NEXT=$((CYCLE + 1))
+          NEXT=$(( ${{ steps.det.outputs.value }} + 1 ))
           gh workflow run z3-5h-cycle.yml \
             --ref "${GITHUB_REF_NAME}" \
             --repo "$REPO" \
-            -f cycle="$NEXT"
+            -f cycle=$NEXT
