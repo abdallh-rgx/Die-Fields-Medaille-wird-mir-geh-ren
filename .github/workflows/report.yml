@@ -1,0 +1,31 @@
+name: View Report
+
+on:
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: state
+
+      - name: Print leaderboard
+        run: |
+          echo "## 🏆 Current Leaderboard" >> $GITHUB_STEP_SUMMARY
+          cat state/LEADERBOARD.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Progress timeline
+        run: |
+          echo "## 📈 Progress Timeline" >> $GITHUB_STEP_SUMMARY
+          echo "| Cycle | Total k | Max k |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          for f in state/history/cycle-*.json; do
+            [ -f "$f" ] || continue
+            C=$(jq -r .cycle "$f")
+            T=$(jq -r .total_k "$f")
+            M=$(jq -r '.best | keys | map(tonumber) | max // 0' "$f")
+            echo "| $C | $T | $M |" >> $GITHUB_STEP_SUMMARY
+          done
