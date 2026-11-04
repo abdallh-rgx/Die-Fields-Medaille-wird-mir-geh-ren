@@ -15,6 +15,12 @@ def addition_chain_length(n):
                 queue.append(s)
     return best.get(n, n - 1)
 
+def normalize_expression(expr_str):
+    if not expr_str:
+        return ""
+    terms = expr_str.split(" * ")
+    return " * ".join(sorted(terms))
+
 def expression_cost(expr_str):
     if not expr_str:
         return None
@@ -102,7 +108,9 @@ def main():
         shard = json.load(open(f))
         for k_str, data in shard.get("results", {}).items():
             if isinstance(data, dict):
-                all_results.setdefault(int(k_str), []).extend(data.get("solutions", []))
+                for sol in data.get("solutions", []):
+                    norm = normalize_expression(sol)
+                    all_results.setdefault(int(k_str), set()).add(norm)
 
     best_per_k = {}
     for k, sols in all_results.items():
