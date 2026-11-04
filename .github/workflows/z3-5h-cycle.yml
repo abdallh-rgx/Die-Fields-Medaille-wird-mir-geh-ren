@@ -1,0 +1,102 @@
+name: Z3 5-Hour Self-Cycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      cycle:
+        description: "cycle counter"
+        default: "0"
+  schedule:
+    - cron: "0 */6 * * *"
+
+concurrency:
+  group: z3-5h-cycle
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cycle:
+    runs-on: self-hosted
+    timeout-minutes: 300
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Restore state from git
+        run: |
+          git config user.email "z3-bot@search.local"
+          git config user.name  "z3-bot"
+          git fetch origin state 2>/dev/null || true
+          if git rev-parse --verify origin/state >/dev/null 2>&1; then
+            git checkout origin/state -- state/ 2>/dev/null || mkdir -p state
+          else
+            mkdir -p state
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python3 -m pip install --quiet "z3-solver>=4.15.4.0"
+
+      - name: Run Z3 worker
+        timeout-minutes: 292
+        env:
+          CYCLE:        ${{ github.event.inputs.cycle || 0 }}
+          STATE_DIR:    "state"
+          TIME_BUDGET:  "17400"
+          CHECKPOINT:   "1080"
+          REPO:         ${{ github.repository }}
+          GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/scripts/z3_worker.py
+
+      - name: Aggregate & update leaderboard
+        if: always()
+        run: |
+          python3 .github/scripts/aggregate.py --state-dir state
+          git add state/best.json state/LEADERBOARD.md state/history/ state/worker.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "cycle ${{ github.event.inputs.cycle || 0 }}: leaderboard update [skip ci]"
+            for i in 1 2 3 4 5; do
+              git push origin HEAD:state && break
+              git fetch origin state && git rebase origin/state
+              sleep $((RANDOM % 8 + 2))
+            done
+          fi
+
+      - name: Final save & chain next cycle
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO:     ${{ github.repository }}
+          CYCLE:    ${{ github.event.inputs.cycle || 0 }}
+          COOLDOWN: "0"
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          git add state/ 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "cycle $CYCLE: final checkpoint [skip ci]" || true
+            git push origin HEAD:state 2>/dev/null || {
+              git fetch origin state
+              git rebase origin/state || true
+              git push origin HEAD:state
+            }
+          fi
+          if [ "$COOLDOWN" -gt 0 ]; then
+            sleep "$COOLDOWN"
+          fi
+          NEXT=$((CYCLE + 1))
+          gh workflow run z3-5h-cycle.yml \
+            --ref "${GITHUB_REF_NAME}" \
+            --repo "$REPO" \
+            -f cycle="$NEXT"
