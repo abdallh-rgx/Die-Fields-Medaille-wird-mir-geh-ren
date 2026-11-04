@@ -5,9 +5,9 @@ on:
 
 jobs:
   report:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: state
@@ -15,7 +15,11 @@ jobs:
       - name: Print leaderboard
         run: |
           echo "## 🏆 Current Leaderboard" >> $GITHUB_STEP_SUMMARY
-          cat state/LEADERBOARD.md >> $GITHUB_STEP_SUMMARY
+          if [ -f state/LEADERBOARD.md ]; then
+            cat state/LEADERBOARD.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "_No results yet._" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Progress timeline
         run: |
