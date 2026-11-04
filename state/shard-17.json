@@ -1,0 +1,12 @@
+{
+  "shard_id": 17,
+  "completed": {},
+  "results": {},
+  "errors": [],
+  "last_run": "2026-11-04T16:06:22.324415+00:00",
+  "bounds": {
+    "k_max": 16,
+    "mul_max": 3,
+    "cycle": 0
+  }
+}
