@@ -23,21 +23,29 @@ def solve_task(k, mul_max, timeout_ms):
     solver.add(z3.Sum([a[i] * b[i] for i in range(n)]) == k)
     solver.add(z3.Sum(b) <= mul_max)
 
-    sols = []
+    unique_sols = set()
     while solver.check() == z3.sat:
         m = solver.model()
-        expr = []
+        terms = []
         for i in range(n):
             ai, bi = m[a[i]].as_long(), m[b[i]].as_long()
             if bi > 0:
-                expr.append(f"(z^{ai})^{bi}")
-        sols.append(" * ".join(expr))
+                terms.append(f"(z^{ai})^{bi}")
+        
+        # ترتيب أبجدي لإزالة التشابه في الترتيب
+        canonical = " * ".join(sorted(terms))
+        unique_sols.add(canonical)
+        
+        # منع Z3 من إعادة نفس التركيبة
         solver.add(z3.Or(
             [a[i] != m[a[i]].as_long() for i in range(n)] +
             [b[i] != m[b[i]].as_long() for i in range(n)]))
-        if len(sols) > 300:
+        
+        # إذا وصلنا لـ 50 حلاً فريداً، توقف (لأن 50 كافية جداً)
+        if len(unique_sols) > 50:
             break
-    return sols
+            
+    return list(unique_sols)
 
 def main():
     args = parse_args()
@@ -91,7 +99,7 @@ def main():
                 "duration_s": round(elapsed(), 1),
             }
             state["completed"][str(k)] = mul_max
-            print(f"shard {args.shard}: k={k} -> {len(sols)} solutions", flush=True)
+            print(f"shard {args.shard}: k={k} -> {len(sols)} unique solutions", flush=True)
         except Exception as e:
             state["errors"].append(f"k={k}: {e}")
 
